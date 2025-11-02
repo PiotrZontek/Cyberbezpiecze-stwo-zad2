@@ -1,0 +1,1039 @@
+import hashlib
+import json
+import math
+import random
+import time
+from datetime import datetime, timedelta
+import tkinter as tk
+from tkinter import ttk, messagebox, simpledialog
+
+# Stałe
+USERS_FILE = "users.json"
+LOGS_FILE = "logs.json"
+CONFIG_FILE = "config.json"
+BLOCKED_FILE = "blocked.json"
+
+
+# Funkcja jednokierunkowa: lg(a/x)
+def one_way_function(x, a=10):
+    """Funkcja jednokierunkowa lg(a/x) gdzie a=10"""
+    try:
+        if x <= 0 or a <= 0:
+            return None
+        result = math.log10(a / x)
+        return round(result, 6)
+    except:
+        return None
+
+
+def hash_password(password):
+    """Hashowanie hasła przy użyciu SHA-256"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def generate_one_time_password(length=8):
+    """Generowanie hasła jednorazowego"""
+    chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%"
+    return ''.join(random.choice(chars) for _ in range(length))
+
+
+def log_activity(username, action, status="sukces"):
+    """Logowanie aktywności użytkowników"""
+    logs = load_logs()
+    log_entry = {
+        "username": username,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "status": status
+    }
+    logs.append(log_entry)
+    save_logs(logs)
+
+
+def load_users():
+    """Wczytywanie użytkowników z pliku"""
+    try:
+        with open(USERS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def save_users(users):
+    """Zapisywanie użytkowników do pliku"""
+    with open(USERS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(users, f, indent=4, ensure_ascii=False)
+
+
+def load_logs():
+    """Wczytywanie logów z pliku"""
+    try:
+        with open(LOGS_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
+
+def save_logs(logs):
+    """Zapisywanie logów do pliku"""
+    with open(LOGS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(logs, f, indent=4, ensure_ascii=False)
+
+
+def load_config():
+    """Wczytywanie konfiguracji"""
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        default_config = {
+            "max_login_attempts": 3,
+            "session_timeout_minutes": 5
+        }
+        save_config(default_config)
+        return default_config
+
+
+def save_config(config):
+    """Zapisywanie konfiguracji"""
+    with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump(config, f, indent=4, ensure_ascii=False)
+
+
+def load_blocked():
+    """Wczytywanie zablokowanych użytkowników"""
+    try:
+        with open(BLOCKED_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
+def save_blocked(blocked):
+    """Zapisywanie zablokowanych użytkowników"""
+    with open(BLOCKED_FILE, 'w', encoding='utf-8') as f:
+        json.dump(blocked, f, indent=4, ensure_ascii=False)
+
+
+def is_user_blocked(username):
+    """Sprawdzanie czy użytkownik jest zablokowany"""
+    blocked = load_blocked()
+    if username in blocked:
+        block_time = datetime.strptime(blocked[username], "%Y-%m-%d %H:%M:%S")
+        if datetime.now() < block_time:
+            remaining = (block_time - datetime.now()).seconds // 60
+            return True, remaining
+        else:
+            del blocked[username]
+            save_blocked(blocked)
+    return False, 0
+
+
+def block_user(username):
+    """Blokowanie użytkownika na 15 minut"""
+    blocked = load_blocked()
+    block_until = datetime.now() + timedelta(minutes=15)
+    blocked[username] = block_until.strftime("%Y-%m-%d %H:%M:%S")
+    save_blocked(blocked)
+    log_activity(username, "Użytkownik zablokowany na 15 minut", "blokada")
+
+
+def initialize_system():
+    """Inicjalizacja systemu z domyślnymi danymi"""
+    users = load_users()
+    if not users:
+        users["admin"] = {
+            "password": hash_password("admin123"),
+            "role": "Administrator",
+            "one_time_password": False,
+            "failed_attempts": 0
+        }
+        save_users(users)
+        log_activity("system", "Inicjalizacja systemu", "sukces")
+
+
+def authenticate_user(username, password):
+    """Uwierzytelnianie użytkownika"""
+    users = load_users()
+
+    if username not in users:
+        return False, "Użytkownik nie istnieje"
+
+    blocked, remaining = is_user_blocked(username)
+    if blocked:
+        return False, f"Konto zablokowane. Pozostało {remaining} minut"
+
+    user = users[username]
+
+    if user["password"] == hash_password(password):
+        user["failed_attempts"] = 0
+        save_users(users)
+
+        if user.get("one_time_password", False):
+            return True, "one_time_password"
+
+        return True, "success"
+    else:
+        config = load_config()
+        user["failed_attempts"] = user.get("failed_attempts", 0) + 1
+
+        if user["failed_attempts"] >= config["max_login_attempts"]:
+            block_user(username)
+            user["failed_attempts"] = 0
+            save_users(users)
+            return False, f"Przekroczono limit prób. Konto zablokowane na 15 minut"
+
+        save_users(users)
+        remaining = config["max_login_attempts"] - user["failed_attempts"]
+        return False, f"Nieprawidłowe hasło. Pozostało prób: {remaining}"
+
+
+class LoginWindow:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("System Kontroli Dostępu - Logowanie")
+        self.root.geometry("500x400")
+        self.root.resizable(False, False)
+
+        # Centrowanie okna
+        self.center_window()
+
+        # Główna ramka
+        main_frame = ttk.Frame(root, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Tytuł
+        title_label = ttk.Label(main_frame, text="System Kontroli Dostępu",
+                                font=("Arial", 18, "bold"))
+        title_label.pack(pady=(0, 5))
+
+        subtitle_label = ttk.Label(main_frame, text="Ćwiczenie 6 - Funkcja: lg(a/x)",
+                                   font=("Arial", 10))
+        subtitle_label.pack(pady=(0, 30))
+
+        # Formularz logowania
+        form_frame = ttk.Frame(main_frame)
+        form_frame.pack(pady=20)
+
+        ttk.Label(form_frame, text="Nazwa użytkownika:", font=("Arial", 11)).grid(
+            row=0, column=0, sticky=tk.W, pady=10)
+        self.username_entry = ttk.Entry(form_frame, width=30, font=("Arial", 11))
+        self.username_entry.grid(row=0, column=1, pady=10, padx=10)
+
+        ttk.Label(form_frame, text="Hasło:", font=("Arial", 11)).grid(
+            row=1, column=0, sticky=tk.W, pady=10)
+        self.password_entry = ttk.Entry(form_frame, width=30, show="●", font=("Arial", 11))
+        self.password_entry.grid(row=1, column=1, pady=10, padx=10)
+
+        # Przyciski
+        button_frame = ttk.Frame(main_frame)
+        button_frame.pack(pady=30)
+
+        login_btn = ttk.Button(button_frame, text="Zaloguj", command=self.login, width=15)
+        login_btn.pack(side=tk.LEFT, padx=5)
+
+        exit_btn = ttk.Button(button_frame, text="Wyjście", command=self.root.quit, width=15)
+        exit_btn.pack(side=tk.LEFT, padx=5)
+
+        # Info
+        info_label = ttk.Label(main_frame,
+                               text="Domyślne konto: admin / admin123",
+                               font=("Arial", 9),
+                               foreground="gray")
+        info_label.pack(pady=(20, 0))
+
+        # Bind Enter key
+        self.root.bind('<Return>', lambda e: self.login())
+        self.username_entry.focus()
+
+    def center_window(self):
+        self.root.update_idletasks()
+        width = self.root.winfo_width()
+        height = self.root.winfo_height()
+        x = (self.root.winfo_screenwidth() // 2) - (width // 2)
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.root.geometry(f'{width}x{height}+{x}+{y}')
+
+    def login(self):
+        username = self.username_entry.get().strip()
+        password = self.password_entry.get()
+
+        if not username or not password:
+            messagebox.showerror("Błąd", "Wprowadź nazwę użytkownika i hasło!")
+            return
+
+        success, message = authenticate_user(username, password)
+
+        if success:
+            if message == "one_time_password":
+                messagebox.showinfo("Hasło jednorazowe",
+                                    "Używasz hasła jednorazowego.\nMusisz je zmienić przed kontynuowaniem.")
+                log_activity(username, "Logowanie z hasłem jednorazowym", "sukces")
+                self.change_password_window(username)
+            else:
+                log_activity(username, "Logowanie", "sukces")
+                messagebox.showinfo("Sukces", f"Witaj, {username}!")
+                self.root.destroy()
+
+                users = load_users()
+                if users[username]["role"] == "Administrator":
+                    self.open_admin_panel(username)
+                else:
+                    self.open_user_panel(username)
+        else:
+            messagebox.showerror("Błąd logowania", message)
+            log_activity(username, "Nieudana próba logowania", "błąd")
+            self.password_entry.delete(0, tk.END)
+
+    def change_password_window(self, username):
+        change_pwd_win = tk.Toplevel(self.root)
+        change_pwd_win.title("Zmiana hasła")
+        change_pwd_win.geometry("400x250")
+        change_pwd_win.transient(self.root)
+        change_pwd_win.grab_set()
+
+        frame = ttk.Frame(change_pwd_win, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="Nowe hasło:", font=("Arial", 11)).grid(
+            row=0, column=0, sticky=tk.W, pady=10)
+        new_pwd_entry = ttk.Entry(frame, width=30, show="●", font=("Arial", 11))
+        new_pwd_entry.grid(row=0, column=1, pady=10, padx=10)
+
+        ttk.Label(frame, text="Potwierdź hasło:", font=("Arial", 11)).grid(
+            row=1, column=0, sticky=tk.W, pady=10)
+        confirm_pwd_entry = ttk.Entry(frame, width=30, show="●", font=("Arial", 11))
+        confirm_pwd_entry.grid(row=1, column=1, pady=10, padx=10)
+
+        def save_password():
+            new_pwd = new_pwd_entry.get()
+            confirm_pwd = confirm_pwd_entry.get()
+
+            if not new_pwd or not confirm_pwd:
+                messagebox.showerror("Błąd", "Wypełnij wszystkie pola!")
+                return
+
+            if new_pwd != confirm_pwd:
+                messagebox.showerror("Błąd", "Hasła nie są identyczne!")
+                return
+
+            users = load_users()
+            users[username]["password"] = hash_password(new_pwd)
+            users[username]["one_time_password"] = False
+            save_users(users)
+
+            log_activity(username, "Zmiana hasła jednorazowego", "sukces")
+            messagebox.showinfo("Sukces", "Hasło zostało zmienione!")
+            change_pwd_win.destroy()
+            self.root.destroy()
+
+            if users[username]["role"] == "Administrator":
+                self.open_admin_panel(username)
+            else:
+                self.open_user_panel(username)
+
+        ttk.Button(frame, text="Zapisz", command=save_password, width=15).grid(
+            row=2, column=0, columnspan=2, pady=20)
+
+    def open_admin_panel(self, username):
+        root = tk.Tk()
+        AdminPanel(root, username)
+        root.mainloop()
+
+    def open_user_panel(self, username):
+        root = tk.Tk()
+        UserPanel(root, username)
+        root.mainloop()
+
+
+class UserPanel:
+    def __init__(self, root, username):
+        self.root = root
+        self.username = username
+        self.root.title(f"Panel Użytkownika - {username}")
+        self.root.geometry("500x400")
+
+        # Session timeout
+        self.config = load_config()
+        self.last_activity = time.time()
+        self.check_timeout()
+
+        # Główna ramka
+        main_frame = ttk.Frame(root, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Nagłówek
+        users = load_users()
+        user_role = users[username]["role"]
+
+        ttk.Label(main_frame, text=f"Panel Użytkownika",
+                  font=("Arial", 16, "bold")).pack(pady=(0, 10))
+        ttk.Label(main_frame, text=f"Zalogowany jako: {username}",
+                  font=("Arial", 12)).pack(pady=5)
+        ttk.Label(main_frame, text=f"Rola: {user_role}",
+                  font=("Arial", 10), foreground="gray").pack(pady=(0, 30))
+
+        # Opcje
+        options_frame = ttk.LabelFrame(main_frame, text="Dostępne opcje", padding="20")
+        options_frame.pack(fill=tk.BOTH, expand=True, pady=20)
+
+        ttk.Button(options_frame, text="🔑 Zmień hasło",
+                   command=self.change_password, width=30).pack(pady=10)
+
+        ttk.Button(options_frame, text="ℹ️ Informacje o koncie",
+                   command=self.show_account_info, width=30).pack(pady=10)
+
+        ttk.Button(options_frame, text="🚪 Wyloguj",
+                   command=self.logout, width=30).pack(pady=10)
+
+        # Timeout info
+        timeout_label = ttk.Label(main_frame,
+                                  text=f"Automatyczne wylogowanie po {self.config['session_timeout_minutes']} minutach bezczynności",
+                                  font=("Arial", 8), foreground="gray")
+        timeout_label.pack(side=tk.BOTTOM, pady=10)
+
+        self.root.protocol("WM_DELETE_WINDOW", self.logout)
+
+    def check_timeout(self):
+        timeout = self.config["session_timeout_minutes"] * 60
+        if time.time() - self.last_activity > timeout:
+            messagebox.showinfo("Timeout sesji",
+                                f"Sesja wygasła po {self.config['session_timeout_minutes']} minutach bezczynności.")
+            log_activity(self.username, "Automatyczne wylogowanie - timeout sesji", "sukces")
+            self.root.destroy()
+            return
+        self.root.after(10000, self.check_timeout)
+
+    def reset_timeout(self):
+        self.last_activity = time.time()
+
+    def change_password(self):
+        self.reset_timeout()
+        pwd_win = tk.Toplevel(self.root)
+        pwd_win.title("Zmiana hasła")
+        pwd_win.geometry("400x300")
+        pwd_win.transient(self.root)
+        pwd_win.grab_set()
+
+        frame = ttk.Frame(pwd_win, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="Aktualne hasło:", font=("Arial", 11)).grid(
+            row=0, column=0, sticky=tk.W, pady=10)
+        current_pwd = ttk.Entry(frame, width=25, show="●")
+        current_pwd.grid(row=0, column=1, pady=10, padx=10)
+
+        ttk.Label(frame, text="Nowe hasło:", font=("Arial", 11)).grid(
+            row=1, column=0, sticky=tk.W, pady=10)
+        new_pwd = ttk.Entry(frame, width=25, show="●")
+        new_pwd.grid(row=1, column=1, pady=10, padx=10)
+
+        ttk.Label(frame, text="Potwierdź nowe hasło:", font=("Arial", 11)).grid(
+            row=2, column=0, sticky=tk.W, pady=10)
+        confirm_pwd = ttk.Entry(frame, width=25, show="●")
+        confirm_pwd.grid(row=2, column=1, pady=10, padx=10)
+
+        def save_password():
+            users = load_users()
+
+            if hash_password(current_pwd.get()) != users[self.username]["password"]:
+                messagebox.showerror("Błąd", "Nieprawidłowe aktualne hasło!")
+                log_activity(self.username, "Nieudana próba zmiany hasła", "błąd")
+                return
+
+            if not new_pwd.get():
+                messagebox.showerror("Błąd", "Nowe hasło nie może być puste!")
+                return
+
+            if new_pwd.get() != confirm_pwd.get():
+                messagebox.showerror("Błąd", "Nowe hasła nie są identyczne!")
+                return
+
+            users[self.username]["password"] = hash_password(new_pwd.get())
+            users[self.username]["one_time_password"] = False
+            save_users(users)
+
+            log_activity(self.username, "Zmiana hasła", "sukces")
+            messagebox.showinfo("Sukces", "Hasło zostało zmienione!")
+            pwd_win.destroy()
+
+        ttk.Button(frame, text="Zapisz", command=save_password, width=15).grid(
+            row=3, column=0, columnspan=2, pady=20)
+
+    def show_account_info(self):
+        self.reset_timeout()
+        users = load_users()
+        user = users[self.username]
+        blocked = load_blocked()
+
+        info = f"Nazwa użytkownika: {self.username}\n"
+        info += f"Rola: {user['role']}\n"
+        info += f"Hasło jednorazowe: {'Tak' if user.get('one_time_password', False) else 'Nie'}\n"
+        info += f"Status konta: {'🔒 Zablokowane' if self.username in blocked else '✅ Aktywne'}\n"
+        info += f"Nieudane próby logowania: {user.get('failed_attempts', 0)}\n"
+
+        messagebox.showinfo("Informacje o koncie", info)
+
+    def logout(self):
+        log_activity(self.username, "Wylogowanie", "sukces")
+        self.root.destroy()
+
+
+class AdminPanel:
+    def __init__(self, root, username):
+        self.root = root
+        self.username = username
+        self.root.title(f"Panel Administratora - {username}")
+        self.root.geometry("900x600")
+
+        # Session timeout
+        self.config = load_config()
+        self.last_activity = time.time()
+        self.check_timeout()
+
+        # Główna ramka
+        main_frame = ttk.Frame(root, padding="10")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Nagłówek
+        header_frame = ttk.Frame(main_frame)
+        header_frame.pack(fill=tk.X, pady=(0, 10))
+
+        ttk.Label(header_frame, text=f"Panel Administratora",
+                  font=("Arial", 16, "bold")).pack(side=tk.LEFT)
+        ttk.Label(header_frame, text=f"Zalogowany: {username}",
+                  font=("Arial", 10)).pack(side=tk.RIGHT)
+
+        # Notebook (zakładki)
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+
+        # Zakładki
+        self.create_users_tab()
+        self.create_logs_tab()
+        self.create_config_tab()
+
+        # Przyciski dolne
+        bottom_frame = ttk.Frame(main_frame)
+        bottom_frame.pack(fill=tk.X, pady=(10, 0))
+
+        ttk.Button(bottom_frame, text="Odśwież", command=self.refresh_all).pack(side=tk.LEFT, padx=5)
+        ttk.Button(bottom_frame, text="Wyloguj", command=self.logout).pack(side=tk.RIGHT, padx=5)
+
+        self.root.protocol("WM_DELETE_WINDOW", self.logout)
+
+    def check_timeout(self):
+        timeout = self.config["session_timeout_minutes"] * 60
+        if time.time() - self.last_activity > timeout:
+            messagebox.showinfo("Timeout sesji",
+                                f"Sesja wygasła po {self.config['session_timeout_minutes']} minutach bezczynności.")
+            log_activity(self.username, "Automatyczne wylogowanie - timeout sesji", "sukces")
+            self.root.destroy()
+            return
+        self.root.after(10000, self.check_timeout)
+
+    def reset_timeout(self):
+        self.last_activity = time.time()
+
+    def create_users_tab(self):
+        users_frame = ttk.Frame(self.notebook)
+        self.notebook.add(users_frame, text="Zarządzanie użytkownikami")
+
+        # Toolbar
+        toolbar = ttk.Frame(users_frame)
+        toolbar.pack(fill=tk.X, pady=5, padx=5)
+
+        ttk.Button(toolbar, text="➕ Dodaj użytkownika",
+                   command=self.add_user_window).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="✏️ Edytuj",
+                   command=self.edit_user_window).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="🗑️ Usuń",
+                   command=self.delete_user).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="🔓 Odblokuj",
+                   command=self.unblock_user).pack(side=tk.LEFT, padx=2)
+
+        # Treeview
+        tree_frame = ttk.Frame(users_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        scrollbar = ttk.Scrollbar(tree_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.users_tree = ttk.Treeview(tree_frame,
+                                       columns=("role", "otp", "status"),
+                                       show="tree headings",
+                                       yscrollcommand=scrollbar.set)
+        self.users_tree.pack(fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.users_tree.yview)
+
+        self.users_tree.heading("#0", text="Użytkownik")
+        self.users_tree.heading("role", text="Rola")
+        self.users_tree.heading("otp", text="Hasło jednorazowe")
+        self.users_tree.heading("status", text="Status")
+
+        self.users_tree.column("#0", width=150)
+        self.users_tree.column("role", width=150)
+        self.users_tree.column("otp", width=150)
+        self.users_tree.column("status", width=150)
+
+        self.refresh_users_list()
+
+        # Info
+        info_label = ttk.Label(users_frame,
+                               text="Maksymalna liczba użytkowników: 7 | Liczba ról: 4",
+                               font=("Arial", 9))
+        info_label.pack(pady=5)
+
+    def refresh_users_list(self):
+        self.reset_timeout()
+        for item in self.users_tree.get_children():
+            self.users_tree.delete(item)
+
+        users = load_users()
+        blocked = load_blocked()
+
+        for username, data in users.items():
+            otp = "Tak" if data.get("one_time_password", False) else "Nie"
+            status = "🔒 ZABLOKOWANY" if username in blocked else "✅ Aktywny"
+            self.users_tree.insert("", tk.END, text=username,
+                                   values=(data["role"], otp, status))
+
+    def add_user_window(self):
+        self.reset_timeout()
+        users = load_users()
+
+        if len(users) >= 7:
+            messagebox.showerror("Błąd", "Osiągnięto maksymalną liczbę użytkowników (7)!")
+            log_activity(self.username, "Próba dodania użytkownika - limit osiągnięty", "błąd")
+            return
+
+        add_win = tk.Toplevel(self.root)
+        add_win.title("Dodaj użytkownika")
+        add_win.geometry("450x450")
+        add_win.transient(self.root)
+        add_win.grab_set()
+
+        frame = ttk.Frame(add_win, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="Nazwa użytkownika:", font=("Arial", 11)).grid(
+            row=0, column=0, sticky=tk.W, pady=10)
+        username_entry = ttk.Entry(frame, width=30, font=("Arial", 11))
+        username_entry.grid(row=0, column=1, pady=10, padx=10)
+
+        ttk.Label(frame, text="Rola:", font=("Arial", 11)).grid(
+            row=1, column=0, sticky=tk.W, pady=10)
+        roles = ["Administrator", "Manager", "Użytkownik", "Gość"]
+        role_var = tk.StringVar(value=roles[0])
+        role_combo = ttk.Combobox(frame, textvariable=role_var, values=roles,
+                                  state="readonly", width=28, font=("Arial", 11))
+        role_combo.grid(row=1, column=1, pady=10, padx=10)
+
+        ttk.Label(frame, text="Typ hasła:", font=("Arial", 11)).grid(
+            row=2, column=0, sticky=tk.W, pady=10)
+        pwd_type_var = tk.StringVar(value="normal")
+        ttk.Radiobutton(frame, text="Hasło normalne", variable=pwd_type_var,
+                        value="normal").grid(row=2, column=1, sticky=tk.W, padx=10)
+        ttk.Radiobutton(frame, text="Hasło jednorazowe", variable=pwd_type_var,
+                        value="otp").grid(row=3, column=1, sticky=tk.W, padx=10)
+
+        password_frame = ttk.LabelFrame(frame, text="Hasło (dla hasła normalnego)", padding="10")
+        password_frame.grid(row=4, column=0, columnspan=2, pady=15, padx=10, sticky=tk.EW)
+
+        ttk.Label(password_frame, text="Hasło:").grid(row=0, column=0, sticky=tk.W, pady=5)
+        pwd_entry = ttk.Entry(password_frame, width=25, show="●")
+        pwd_entry.grid(row=0, column=1, pady=5, padx=5)
+
+        ttk.Label(password_frame, text="Potwierdź:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        confirm_entry = ttk.Entry(password_frame, width=25, show="●")
+        confirm_entry.grid(row=1, column=1, pady=5, padx=5)
+
+        def save_user():
+            new_username = username_entry.get().strip()
+            role = role_var.get()
+            pwd_type = pwd_type_var.get()
+
+            if not new_username:
+                messagebox.showerror("Błąd", "Wprowadź nazwę użytkownika!")
+                return
+
+            users = load_users()
+            if new_username in users:
+                messagebox.showerror("Błąd", "Użytkownik już istnieje!")
+                return
+
+            if pwd_type == "otp":
+                otp = generate_one_time_password()
+                x = random.uniform(0.1, 9.9)
+                y = one_way_function(x)
+
+                info_text = f"Wygenerowane hasło jednorazowe:\n\n{otp}\n\n"
+                info_text += f"Demonstracja funkcji lg(a/x) gdzie a=10:\n"
+                info_text += f"x = {x:.4f}\n"
+                info_text += f"y = lg(10/{x:.4f}) = {y}\n\n"
+                info_text += "Użytkownik będzie musiał zmienić hasło przy pierwszym logowaniu."
+
+                messagebox.showinfo("Hasło jednorazowe", info_text)
+
+                users[new_username] = {
+                    "password": hash_password(otp),
+                    "role": role,
+                    "one_time_password": True,
+                    "failed_attempts": 0
+                }
+            else:
+                password = pwd_entry.get()
+                confirm = confirm_entry.get()
+
+                if not password:
+                    messagebox.showerror("Błąd", "Wprowadź hasło!")
+                    return
+
+                if password != confirm:
+                    messagebox.showerror("Błąd", "Hasła nie są identyczne!")
+                    return
+
+                users[new_username] = {
+                    "password": hash_password(password),
+                    "role": role,
+                    "one_time_password": False,
+                    "failed_attempts": 0
+                }
+
+            save_users(users)
+            log_activity(self.username, f"Utworzono użytkownika: {new_username} z rolą {role}", "sukces")
+            messagebox.showinfo("Sukces", f"Użytkownik '{new_username}' został dodany!")
+            self.refresh_users_list()
+            add_win.destroy()
+
+        ttk.Button(frame, text="Zapisz", command=save_user, width=15).grid(
+            row=5, column=0, columnspan=2, pady=20)
+
+    def edit_user_window(self):
+        self.reset_timeout()
+        selection = self.users_tree.selection()
+        if not selection:
+            messagebox.showwarning("Uwaga", "Wybierz użytkownika do edycji!")
+            return
+
+        username = self.users_tree.item(selection[0])["text"]
+        users = load_users()
+        user = users[username]
+
+        edit_win = tk.Toplevel(self.root)
+        edit_win.title(f"Edytuj użytkownika: {username}")
+        edit_win.geometry("400x450")
+        edit_win.transient(self.root)
+        edit_win.grab_set()
+
+        frame = ttk.Frame(edit_win, padding="20")
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text=f"Edycja użytkownika: {username}",
+                  font=("Arial", 12, "bold")).pack(pady=(0, 20))
+
+        # Zmiana roli
+        role_frame = ttk.LabelFrame(frame, text="Zmień rolę", padding="10")
+        role_frame.pack(fill=tk.X, pady=10)
+
+        roles = ["Administrator", "Manager", "Użytkownik", "Gość"]
+        role_var = tk.StringVar(value=user["role"])
+        for role in roles:
+            ttk.Radiobutton(role_frame, text=role, variable=role_var,
+                            value=role).pack(anchor=tk.W)
+
+        def change_role():
+            new_role = role_var.get()
+            users[username]["role"] = new_role
+            save_users(users)
+            log_activity(self.username, f"Zmieniono rolę użytkownika {username} na {new_role}", "sukces")
+            messagebox.showinfo("Sukces", f"Rola zmieniona na: {new_role}")
+            self.refresh_users_list()
+
+        ttk.Button(role_frame, text="Zapisz rolę", command=change_role).pack(pady=5)
+
+        # Zmiana hasła
+        pwd_frame = ttk.LabelFrame(frame, text="Zmień hasło", padding="10")
+        pwd_frame.pack(fill=tk.X, pady=10)
+
+        def change_password():
+            pwd_win = tk.Toplevel(edit_win)
+            pwd_win.title("Zmiana hasła")
+            pwd_win.geometry("350x200")
+            pwd_win.transient(edit_win)
+            pwd_win.grab_set()
+
+            pwd_frame2 = ttk.Frame(pwd_win, padding="20")
+            pwd_frame2.pack(fill=tk.BOTH, expand=True)
+
+            ttk.Label(pwd_frame2, text="Nowe hasło:").grid(row=0, column=0, sticky=tk.W, pady=5)
+            new_pwd = ttk.Entry(pwd_frame2, width=25, show="●")
+            new_pwd.grid(row=0, column=1, pady=5, padx=5)
+
+            ttk.Label(pwd_frame2, text="Potwierdź:").grid(row=1, column=0, sticky=tk.W, pady=5)
+            confirm_pwd = ttk.Entry(pwd_frame2, width=25, show="●")
+            confirm_pwd.grid(row=1, column=1, pady=5, padx=5)
+
+            def save_pwd():
+                if new_pwd.get() != confirm_pwd.get():
+                    messagebox.showerror("Błąd", "Hasła nie są identyczne!")
+                    return
+                if not new_pwd.get():
+                    messagebox.showerror("Błąd", "Hasło nie może być puste!")
+                    return
+
+                users[username]["password"] = hash_password(new_pwd.get())
+                users[username]["one_time_password"] = False
+                save_users(users)
+                log_activity(self.username, f"Zmieniono hasło użytkownika: {username}", "sukces")
+                messagebox.showinfo("Sukces", "Hasło zostało zmienione!")
+                pwd_win.destroy()
+
+            ttk.Button(pwd_frame2, text="Zapisz", command=save_pwd).grid(
+                row=2, column=0, columnspan=2, pady=10)
+
+        ttk.Button(pwd_frame, text="Zmień hasło normalne", command=change_password).pack(pady=5)
+
+        def generate_otp():
+            otp = generate_one_time_password()
+            x = random.uniform(0.1, 9.9)
+            y = one_way_function(x)
+
+            info_text = f"Wygenerowane hasło jednorazowe:\n\n{otp}\n\n"
+            info_text += f"Demonstracja funkcji lg(a/x) gdzie a=10:\n"
+            info_text += f"x = {x:.4f}\n"
+            info_text += f"y = lg(10/{x:.4f}) = {y}\n\n"
+            info_text += "Użytkownik będzie musiał zmienić hasło przy pierwszym logowaniu."
+
+            messagebox.showinfo("Hasło jednorazowe", info_text)
+
+            users[username]["password"] = hash_password(otp)
+            users[username]["one_time_password"] = True
+            save_users(users)
+            log_activity(self.username, f"Wygenerowano hasło jednorazowe dla: {username}", "sukces")
+            self.refresh_users_list()
+
+        ttk.Button(pwd_frame, text="Wygeneruj hasło jednorazowe", command=generate_otp).pack(pady=5)
+
+    def delete_user(self):
+        self.reset_timeout()
+        selection = self.users_tree.selection()
+        if not selection:
+            messagebox.showwarning("Uwaga", "Wybierz użytkownika do usunięcia!")
+            return
+
+        username = self.users_tree.item(selection[0])["text"]
+
+        if username == "admin":
+            messagebox.showerror("Błąd", "Nie można usunąć konta administratora!")
+            return
+
+        confirm = messagebox.askyesno("Potwierdzenie",
+                                      f"Czy na pewno usunąć użytkownika '{username}'?")
+        if confirm:
+            users = load_users()
+            del users[username]
+            save_users(users)
+            log_activity(self.username, f"Usunięto użytkownika: {username}", "sukces")
+            messagebox.showinfo("Sukces", f"Użytkownik '{username}' został usunięty!")
+            self.refresh_users_list()
+
+    def unblock_user(self):
+        self.reset_timeout()
+        selection = self.users_tree.selection()
+        if not selection:
+            messagebox.showwarning("Uwaga", "Wybierz użytkownika do odblokowania!")
+            return
+
+        username = self.users_tree.item(selection[0])["text"]
+        blocked = load_blocked()
+
+        if username in blocked:
+            del blocked[username]
+            save_blocked(blocked)
+
+            users = load_users()
+            users[username]["failed_attempts"] = 0
+            save_users(users)
+
+            log_activity(self.username, f"Odblokowano użytkownika: {username}", "sukces")
+            messagebox.showinfo("Sukces", f"Użytkownik '{username}' został odblokowany!")
+            self.refresh_users_list()
+        else:
+            messagebox.showinfo("Informacja", "Użytkownik nie jest zablokowany.")
+
+    def create_logs_tab(self):
+        logs_frame = ttk.Frame(self.notebook)
+        self.notebook.add(logs_frame, text="Logi aktywności")
+
+        # Toolbar
+        toolbar = ttk.Frame(logs_frame)
+        toolbar.pack(fill=tk.X, pady=5, padx=5)
+
+        ttk.Button(toolbar, text="🔄 Odśwież logi",
+                   command=self.refresh_logs).pack(side=tk.LEFT, padx=2)
+        ttk.Button(toolbar, text="🗑️ Wyczyść logi",
+                   command=self.clear_logs).pack(side=tk.LEFT, padx=2)
+
+        # Treeview
+        tree_frame = ttk.Frame(logs_frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        scrollbar = ttk.Scrollbar(tree_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.logs_tree = ttk.Treeview(tree_frame,
+                                      columns=("timestamp", "username", "action", "status"),
+                                      show="headings",
+                                      yscrollcommand=scrollbar.set)
+        self.logs_tree.pack(fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.logs_tree.yview)
+
+        self.logs_tree.heading("timestamp", text="Data i czas")
+        self.logs_tree.heading("username", text="Użytkownik")
+        self.logs_tree.heading("action", text="Akcja")
+        self.logs_tree.heading("status", text="Status")
+
+        self.logs_tree.column("timestamp", width=150)
+        self.logs_tree.column("username", width=120)
+        self.logs_tree.column("action", width=300)
+        self.logs_tree.column("status", width=100)
+
+        self.refresh_logs()
+
+    def refresh_logs(self):
+        self.reset_timeout()
+        for item in self.logs_tree.get_children():
+            self.logs_tree.delete(item)
+
+        logs = load_logs()
+
+        # Wyświetlanie ostatnich 100 logów
+        for log in logs[-100:]:
+            self.logs_tree.insert("", 0, values=(
+                log["timestamp"],
+                log["username"],
+                log["action"],
+                log["status"]
+            ))
+
+    def clear_logs(self):
+        self.reset_timeout()
+        confirm = messagebox.askyesno("Potwierdzenie",
+                                      "Czy na pewno wyczyścić wszystkie logi?")
+        if confirm:
+            save_logs([])
+            log_activity(self.username, "Wyczyszczono logi aktywności", "sukces")
+            self.refresh_logs()
+            messagebox.showinfo("Sukces", "Logi zostały wyczyszczone!")
+
+    def create_config_tab(self):
+        config_frame = ttk.Frame(self.notebook)
+        self.notebook.add(config_frame, text="Konfiguracja bezpieczeństwa")
+
+        main_frame = ttk.Frame(config_frame, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Limit błędnych logowań
+        login_frame = ttk.LabelFrame(main_frame, text="Limit błędnych logowań", padding="15")
+        login_frame.pack(fill=tk.X, pady=10)
+
+        ttk.Label(login_frame, text="Po przekroczeniu limitu konto zostanie zablokowane na 15 minut.",
+                  font=("Arial", 9)).pack(pady=(0, 10))
+
+        limit_frame = ttk.Frame(login_frame)
+        limit_frame.pack()
+
+        ttk.Label(limit_frame, text="Maksymalna liczba prób:",
+                  font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+
+        limit_var = tk.StringVar(value=str(self.config["max_login_attempts"]))
+        limit_spinbox = ttk.Spinbox(limit_frame, from_=1, to=10, textvariable=limit_var,
+                                    width=10, font=("Arial", 10))
+        limit_spinbox.pack(side=tk.LEFT, padx=5)
+
+        def save_limit():
+            try:
+                new_limit = int(limit_var.get())
+                if 1 <= new_limit <= 10:
+                    self.config["max_login_attempts"] = new_limit
+                    save_config(self.config)
+                    log_activity(self.username, f"Zmieniono limit logowań na {new_limit}", "sukces")
+                    messagebox.showinfo("Sukces", f"Limit ustawiony na: {new_limit}")
+                else:
+                    messagebox.showerror("Błąd", "Wartość musi być między 1 a 10!")
+            except ValueError:
+                messagebox.showerror("Błąd", "Nieprawidłowa wartość!")
+
+        ttk.Button(limit_frame, text="Zapisz", command=save_limit).pack(side=tk.LEFT, padx=5)
+
+        # Czas sesji
+        session_frame = ttk.LabelFrame(main_frame, text="Czas sesji użytkownika", padding="15")
+        session_frame.pack(fill=tk.X, pady=10)
+
+        ttk.Label(session_frame, text="Po przekroczeniu czasu bezczynności użytkownik zostanie wylogowany.",
+                  font=("Arial", 9)).pack(pady=(0, 10))
+
+        timeout_frame = ttk.Frame(session_frame)
+        timeout_frame.pack()
+
+        ttk.Label(timeout_frame, text="Czas nieaktywności (minuty):",
+                  font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
+
+        timeout_var = tk.StringVar(value=str(self.config["session_timeout_minutes"]))
+        timeout_spinbox = ttk.Spinbox(timeout_frame, from_=1, to=60, textvariable=timeout_var,
+                                      width=10, font=("Arial", 10))
+        timeout_spinbox.pack(side=tk.LEFT, padx=5)
+
+        def save_timeout():
+            try:
+                new_timeout = int(timeout_var.get())
+                if 1 <= new_timeout <= 60:
+                    self.config["session_timeout_minutes"] = new_timeout
+                    save_config(self.config)
+                    log_activity(self.username, f"Zmieniono czas sesji na {new_timeout} min", "sukces")
+                    messagebox.showinfo("Sukces",
+                                        f"Czas sesji ustawiony na: {new_timeout} minut\n\n"
+                                        "Nowe ustawienie będzie obowiązywać od następnego logowania.")
+                else:
+                    messagebox.showerror("Błąd", "Wartość musi być między 1 a 60!")
+            except ValueError:
+                messagebox.showerror("Błąd", "Nieprawidłowa wartość!")
+
+        ttk.Button(timeout_frame, text="Zapisz", command=save_timeout).pack(side=tk.LEFT, padx=5)
+
+        # Info
+        info_frame = ttk.LabelFrame(main_frame, text="Informacje systemowe", padding="15")
+        info_frame.pack(fill=tk.X, pady=10)
+
+        users = load_users()
+        blocked = load_blocked()
+        logs = load_logs()
+
+        info_text = f"Liczba użytkowników: {len(users)}/7\n"
+        info_text += f"Zablokowanych użytkowników: {len(blocked)}\n"
+        info_text += f"Liczba logów: {len(logs)}\n"
+        info_text += f"Funkcja jednokierunkowa: lg(a/x) gdzie a=10"
+
+        ttk.Label(info_frame, text=info_text, font=("Arial", 10)).pack()
+
+    def refresh_all(self):
+        self.reset_timeout()
+        self.refresh_users_list()
+        self.refresh_logs()
+        messagebox.showinfo("Odświeżono", "Wszystkie dane zostały odświeżone!")
+
+    def logout(self):
+        log_activity(self.username, "Wylogowanie", "sukces")
+        self.root.destroy()
+
+
+def main():
+    initialize_system()
+    root = tk.Tk()
+    LoginWindow(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
